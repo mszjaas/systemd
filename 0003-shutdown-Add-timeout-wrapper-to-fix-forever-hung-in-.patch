@@ -1,0 +1,61 @@
+From 76170498bf3599967d37474fac8a0df80abfd34d Mon Sep 17 00:00:00 2001
+From: zhangjian <zhangjian496@huawei.com>
+Date: Sat, 28 Jun 2025 11:54:00 +0800
+Subject: [PATCH 3/3] shutdown: Add timeout wrapper to fix forever hung in
+ shutdown
+
+For network filesystem (eg:NFS) mount point, if server is not reachable
+and network request is not done, systemd-shutdown may hung forever in is_dir
+function. So it is necessay to add a timeout wrapper.
+
+Stack snippy by crash:
+=============================================================
+PID: 1 TASK: ffff8aa9c0252140 CPU: 2 COMMAND: "systemd-shutdow"
+RIP: 00007f309791a2be RSP: 00007ffdab856218 RFLAGS: 00000246
+RAX: ffffffffffffffda RBX: 00007ffdab856398 RCX: 00007f309791a2be
+RDX: 00007ffdab856220 RSI: 000055ea1c2bb830 RDI: 00000000ffffff9c
+RBP: 000055ea1c2bccd0 R8: 00000000ffffff9c R9: 00007ffdab856220
+R10: 0000000000000000 R11: 0000000000000246 R12: 00007ffdab8563c0
+R13: 0000000000000000 R14: 0000000000000001 R15: 000055ea1c2bb7f0
+ORIG_RAX: 0000000000000106 CS: 0033 SS: 002b
+=============================================================
+
+Signed-off-by: zhangjian <zhangjian496@huawei.com>
+---
+ src/shutdown/umount.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/shutdown/umount.c b/src/shutdown/umount.c
+index 0f1a2201fb..99d478f8fe 100644
+--- a/src/shutdown/umount.c
++++ b/src/shutdown/umount.c
+@@ -37,6 +37,7 @@ static int shutdown_timeout_wrapper(const char* task_name, const char* task_note
+                                     TimeoutTask func, MountPoint *m, bool last_try);
+ static int remount_internal(MountPoint *m, bool last_try); 
+ static int umount_internal(MountPoint *m, bool last_try);
++static int check_is_dir_internal(MountPoint *m, bool last_try);
+ 
+ static void mount_point_free(MountPoint **head, MountPoint *m) {
+         assert(head);
+@@ -326,7 +327,7 @@ static int mount_points_list_umount(MountPoint **head, bool *changed, bool last_
+                         xsprintf(newpath, "/run/shutdown/mounts/%016" PRIx64, random_u64());
+ 
+                         /* on error of is_dir, assume directory */
+-                        if (is_dir(m->path, true) != 0) {
++                        if (shutdown_timeout_wrapper("(checkdir)", "Checking IsDir", check_is_dir_internal, m, true) != 0) {
+                                 r = mkdir_p(newpath, 0000);
+                                 if (r < 0) {
+                                         log_full_errno(last_try ? LOG_ERR : LOG_INFO, r, "Could not create directory %s: %m", newpath);
+@@ -474,4 +475,8 @@ static int umount_internal(MountPoint *m, bool last_try) {
+                 manager_status_printf(NULL, STATUS_TYPE_NORMAL, NULL, "Unmounted '%s'.", m->path);
+         }
+         return r;
++}
++
++static int check_is_dir_internal(MountPoint *m, bool last_try) {
++        return is_dir(m->path, true);
+ }
+\ No newline at end of file
+-- 
+2.43.0
+
